@@ -48,6 +48,59 @@ export default function Hojear({ pdf, sizes, pagina, onPagina, onTap, noche, son
     const dibujadas = new Map() // num -> tarea
     let anchoPag = 0
     let vivo = true
+    let recorte = { x: 0, y: 0, w: 1, h: 1 }
+
+    // Detecta los margenes blancos del libro mirando varias paginas de texto,
+    // para recortarlos y que la letra se vea mas grande en el movil.
+    const detectarMargenes = async () => {
+      const n = pdf.numPages
+      const muestras = [
+        paginaRef.current,
+        paginaRef.current + 1,
+        Math.round(n * 0.3),
+        Math.round(n * 0.5),
+        Math.round(n * 0.7),
+      ].filter((p, i, a) => p > 3 && p <= n && a.indexOf(p) === i)
+      if (!muestras.length) return
+      let x1 = 1, y1 = 1, x2 = 0, y2 = 0
+      for (const num of muestras) {
+        const page = await pdf.getPage(num)
+        const base = page.getViewport({ scale: 1 })
+        const vp = page.getViewport({ scale: 200 / base.width })
+        const c = document.createElement('canvas')
+        c.width = Math.floor(vp.width)
+        c.height = Math.floor(vp.height)
+        const ctx = c.getContext('2d', { willReadFrequently: true })
+        await page.render({ canvasContext: ctx, viewport: vp }).promise
+        const { data, width, height } = ctx.getImageData(0, 0, c.width, c.height)
+        let a = width, b = height, cc = 0, d = 0
+        for (let y = 0; y < height; y++) {
+          for (let x = 0; x < width; x++) {
+            const k = (y * width + x) * 4
+            if (data[k] + data[k + 1] + data[k + 2] < 690 && data[k + 3] > 0) {
+              if (x < a) a = x
+              if (x > cc) cc = x
+              if (y < b) b = y
+              if (y > d) d = y
+            }
+          }
+        }
+        if (cc <= a || d <= b) continue
+        x1 = Math.min(x1, a / width)
+        x2 = Math.max(x2, cc / width)
+        y1 = Math.min(y1, b / height)
+        y2 = Math.max(y2, d / height)
+      }
+      if (x2 <= x1 || y2 <= y1) return
+      const px = 0.035
+      const py = 0.03
+      x1 = Math.max(0, x1 - px)
+      y1 = Math.max(0, y1 - py)
+      x2 = Math.min(1, x2 + px)
+      y2 = Math.min(1, y2 + py)
+      // solo si de verdad se gana espacio
+      if (x2 - x1 < 0.95 || y2 - y1 < 0.95) recorte = { x: x1, y: y1, w: x2 - x1, h: y2 - y1 }
+    }
 
     const dibujar = async (i) => {
       if (i < 0 || i >= canvases.length || dibujadas.has(i)) return
@@ -57,10 +110,17 @@ export default function Hojear({ pdf, sizes, pagina, onPagina, onTap, noche, son
         if (!vivo) return
         const base = page.getViewport({ scale: 1 })
         const dpr = Math.min(window.devicePixelRatio || 1, 2.5)
-        const vp = page.getViewport({ scale: (anchoPag / base.width) * dpr })
+        const r = recorte
+        const scale = (anchoPag / (base.width * r.w)) * dpr
+        // se dibuja solo la zona con texto (sin los margenes blancos del PDF)
+        const vp = page.getViewport({
+          scale,
+          offsetX: -r.x * base.width * scale,
+          offsetY: -r.y * base.height * scale,
+        })
         const off = document.createElement('canvas')
-        off.width = Math.floor(vp.width)
-        off.height = Math.floor(vp.height)
+        off.width = Math.floor(base.width * r.w * scale)
+        off.height = Math.floor(base.height * r.h * scale)
         const task = page.render({ canvasContext: off.getContext('2d'), viewport: vp })
         dibujadas.set(i, task)
         await task.promise
@@ -99,14 +159,16 @@ export default function Hojear({ pdf, sizes, pagina, onPagina, onTap, noche, son
       const movil =
         window.matchMedia('(pointer: coarse)').matches || Math.min(innerWidth, innerHeight) < 600
       const dos = !movil && cont.clientWidth > cont.clientHeight * 1.1
-      const W = (cont.clientWidth - 24) / (dos ? 2 : 1)
-      const H = cont.clientHeight - 36
-      const s = sizes[0]
+      // en movil el libro ocupa practicamente toda la pantalla
+      const W = (cont.clientWidth - (movil ? 6 : 24)) / (dos ? 2 : 1)
+      const H = cont.clientHeight - (movil ? 10 : 36)
+      const sw = sizes[0].w * recorte.w
+      const sh = sizes[0].h * recorte.h
       let w = W
-      let h = (w * s.h) / s.w
+      let h = (w * sh) / sw
       if (h > H) {
         h = H
-        w = (h * s.w) / s.h
+        w = (h * sw) / sh
       }
       anchoPag = Math.floor(w)
       const host = document.createElement('div')
@@ -157,13 +219,18 @@ export default function Hojear({ pdf, sizes, pagina, onPagina, onTap, noche, son
       alrededor(paginaRef.current - 1)
     }
 
-    montar()
     let t
     const ro = new ResizeObserver(() => {
       clearTimeout(t)
-      t = setTimeout(montar, 250)
+      t = setTimeout(() => vivo && montar(), 250)
     })
-    ro.observe(cont)
+    detectarMargenes()
+      .catch((e) => console.warn('Sin recorte de margenes', e))
+      .then(() => {
+        if (!vivo) return
+        montar()
+        ro.observe(cont)
+      })
     return () => {
       vivo = false
       clearTimeout(t)
