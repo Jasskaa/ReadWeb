@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { actualizarLibro, obtenerArchivo } from './db'
 import { abrirPdf, cerrarPdf, tamanosPaginas } from './pdf'
+import Hojear from './Hojear'
 
 const GAP = 10
 const PAD_TOP = 12
@@ -95,6 +96,11 @@ export default function Lector({ libro, onSalir }) {
   const [root, setRoot] = useState(null)
   const [barras, setBarras] = useState(false) // sin distracciones: ocultas por defecto
   const [guardado, setGuardado] = useState(false)
+  const [modo, setModo] = useState(() => localStorage.getItem('lector-modo') || 'libro')
+  const [sonido, setSonido] = useState(() => localStorage.getItem('lector-sonido') !== '0')
+  const modoRef = useRef(modo)
+  modoRef.current = modo
+  const timerGuardar = useRef(null)
 
   const restaurado = useRef(false)
   const timerBarras = useRef(null)
@@ -191,7 +197,7 @@ export default function Lector({ libro, onSalir }) {
 
   // Guardar el marcapaginas
   const guardar = useCallback(() => {
-    if (!restaurado.current || !pdf) return
+    if (!pdf || (!restaurado.current && modoRef.current !== 'libro')) return
     const p = posRef.current
     try {
       localStorage.setItem(`pos-${libro.id}`, JSON.stringify(p))
@@ -229,6 +235,34 @@ export default function Lector({ libro, onSalir }) {
       root.removeEventListener('scroll', onScroll)
     }
   }, [root, posicionActual, guardar, libro.id])
+
+  // Modo libro: cambiar de pagina
+  const alPasar = useCallback(
+    (n) => {
+      posRef.current = { pagina: n, fraccion: 0 }
+      setPagina(n)
+      try {
+        localStorage.setItem(`pos-${libro.id}`, JSON.stringify(posRef.current))
+      } catch {
+        /* */
+      }
+      clearTimeout(timerGuardar.current)
+      timerGuardar.current = setTimeout(guardar, 400)
+    },
+    [libro.id, guardar],
+  )
+
+  const cambiarModo = () => {
+    const nuevo = modo === 'libro' ? 'scroll' : 'libro'
+    if (nuevo === 'scroll') {
+      restaurado.current = false
+      posRef.current = { pagina: posRef.current.pagina, fraccion: 0 }
+    }
+    localStorage.setItem('lector-modo', nuevo)
+    setRoot(null)
+    setModo(nuevo)
+    mantener()
+  }
 
   // Si la app se cierra, se minimiza o se cambia de app: guardar ya
   useEffect(() => {
@@ -280,6 +314,8 @@ export default function Lector({ libro, onSalir }) {
 
   useEffect(() => {
     const onKey = (e) => {
+      if (e.key === 'Escape') return onSalir()
+      if (modoRef.current === 'libro') return
       if (e.key === 'ArrowRight' || e.key === 'PageDown') irA(posRef.current.pagina + 1, 0, true)
       else if (e.key === 'ArrowLeft' || e.key === 'PageUp') irA(posRef.current.pagina - 1, 0, true)
       else if (e.key === 'Escape') onSalir()
@@ -311,6 +347,22 @@ export default function Lector({ libro, onSalir }) {
         <div className="titulo-lector">{libro.titulo}</div>
         <button
           className="neu-btn redondo"
+          onClick={() => {
+            const v = !sonido
+            setSonido(v)
+            localStorage.setItem('lector-sonido', v ? '1' : '0')
+            mantener()
+          }}
+          aria-label="Sonido al pasar página"
+          style={{ opacity: modo === 'libro' ? 1 : 0.35 }}
+        >
+          {sonido ? '♪' : '–'}
+        </button>
+        <button className="neu-btn redondo" onClick={cambiarModo} aria-label="Cambiar entre libro y scroll">
+          {modo === 'libro' ? '≡' : '❐'}
+        </button>
+        <button
+          className="neu-btn redondo"
           onClick={() => { setOscuro((o) => !o); mantener() }}
           aria-label="Atenuar página (modo noche)"
         >
@@ -318,6 +370,24 @@ export default function Lector({ libro, onSalir }) {
         </button>
       </header>
 
+      {modo === 'libro' ? (
+        pdf && sizes ? (
+          <Hojear
+            pdf={pdf}
+            sizes={sizes}
+            pagina={pagina}
+            onPagina={alPasar}
+            onTap={() => mostrarBarras(!barras)}
+            noche={oscuro}
+            sonido={sonido}
+          />
+        ) : (
+          <div className="lector-estado">
+            <div className="neu-anillo" />
+            <p>Abriendo libro… {Math.round(progresoCarga * 100)}%</p>
+          </div>
+        )
+      ) : (
       <div className="scroll" ref={setRoot} onClick={() => mostrarBarras(!barras)}>
         {!layout ? (
           <div className="lector-estado">
@@ -342,6 +412,7 @@ export default function Lector({ libro, onSalir }) {
           </div>
         )}
       </div>
+      )}
 
       {/* Unica pista mientras se lee: una linea finisima de progreso */}
       <div className={`hilo ${barras ? 'oculta' : ''}`}>
@@ -351,11 +422,15 @@ export default function Lector({ libro, onSalir }) {
       {pdf && (
         <footer className={`pie ${barras ? '' : 'oculta'}`} onPointerDown={mantener}>
           <div className="pie-fila">
-            <button className="neu-btn redondo" onClick={() => cambiarZoom(-0.15)} aria-label="Reducir">−</button>
+            {modo === 'scroll' && (
+              <button className="neu-btn redondo" onClick={() => cambiarZoom(-0.15)} aria-label="Reducir">−</button>
+            )}
             <button className={`neu-btn marca ${guardado ? 'activo' : ''}`} onClick={marcar}>
               {guardado ? '✓ Marcapáginas guardado' : `Pág. ${pagina} / ${total} · ${pct}%`}
             </button>
-            <button className="neu-btn redondo" onClick={() => cambiarZoom(0.15)} aria-label="Ampliar">+</button>
+            {modo === 'scroll' && (
+              <button className="neu-btn redondo" onClick={() => cambiarZoom(0.15)} aria-label="Ampliar">+</button>
+            )}
           </div>
           <input
             className="neu-range"
@@ -363,7 +438,12 @@ export default function Lector({ libro, onSalir }) {
             min={1}
             max={total}
             value={pagina}
-            onChange={(e) => { irA(Number(e.target.value)); mantener() }}
+            onChange={(e) => {
+              const n = Number(e.target.value)
+              if (modo === 'libro') alPasar(n)
+              else irA(n)
+              mantener()
+            }}
             aria-label="Posición en el libro"
           />
         </footer>
