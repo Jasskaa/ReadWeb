@@ -95,7 +95,10 @@ export default function Hojear({ pdf, sizes, pagina, onPagina, onTap, noche, son
       flip?.destroy()
       dibujadas.clear()
       // pantalla ancha (tablet/ordenador): libro abierto a doble pagina
-      const dos = cont.clientWidth > cont.clientHeight * 1.1
+      // En movil (pantalla tactil o estrecha) SIEMPRE una sola pagina, aunque se gire
+      const movil =
+        window.matchMedia('(pointer: coarse)').matches || Math.min(innerWidth, innerHeight) < 600
+      const dos = !movil && cont.clientWidth > cont.clientHeight * 1.1
       const W = (cont.clientWidth - 24) / (dos ? 2 : 1)
       const H = cont.clientHeight - 36
       const s = sizes[0]
@@ -108,6 +111,8 @@ export default function Hojear({ pdf, sizes, pagina, onPagina, onTap, noche, son
       anchoPag = Math.floor(w)
       const host = document.createElement('div')
       host.className = 'libro-host'
+      // con el contenedor del ancho de una pagina, page-flip usa el modo de una sola hoja
+      if (!dos) host.style.width = `${Math.floor(w)}px`
       cont.appendChild(host)
       const paginas = sizes.map((_, i) => {
         const p = document.createElement('div')
